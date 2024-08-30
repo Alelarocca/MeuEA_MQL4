@@ -1,0 +1,245 @@
+//+------------------------------------------------------------------+
+//|                                                        MyEA.mq4  |
+//|                        Copyright 2024, Your Name                 |
+//|                        https://www.yourwebsite.com               |
+//+------------------------------------------------------------------+
+#property strict
+
+// Definindo o ENUM para os métodos das médias móveis
+enum MovingAverageMethod
+{
+    SMA = 0, // Média Móvel Simples
+    EMA = 1, // Média Móvel Exponencial
+    SMMA = 2 // Média Móvel Suavizada
+};
+
+// Definindo o ENUM para os tipos de indicadores
+enum IndicatorType
+{
+    INTERNAL = 0, // Indicador Interno
+    EXTERNAL = 1  // Indicador Externo
+};
+
+// Parâmetros para configuração dos indicadores
+extern IndicatorType IndicatorSelection = EXTERNAL; // Tipo de indicador a ser usado
+extern string Indicator1Name = "YourFirstIndicator";  // Nome do primeiro indicador externo
+extern string Indicator2Name = "YourSecondIndicator"; // Nome do segundo indicador externo
+
+// Buffers do primeiro indicador (compra e venda)
+extern int Indicator1BuyBufferIndex = 0;              // Índice do buffer de compra do indicador 1
+extern int Indicator1SellBufferIndex = 1;             // Índice do buffer de venda do indicador 1
+
+// Buffers do segundo indicador (compra e venda)
+extern int Indicator2BuyBufferIndex = 0;              // Índice do buffer de compra do indicador 2
+extern int Indicator2SellBufferIndex = 1;             // Índice do buffer de venda do indicador 2
+
+extern double LotSize = 0.1;                          // Tamanho do lote inicial
+extern double MartingaleMultiplier = 2.0;             // Multiplicador do Martingale
+extern int MagicNumber = 12345;                       // Número mágico para identificar ordens
+extern double MaxDrawdown = 50;                       // Máximo de perda permitida antes de parar
+extern bool UseCrossing = true;                       // Usar cruzamento entre indicadores
+extern bool BuyAboveIndicators = true;                // Comprar quando preço estiver acima dos indicadores
+extern double MartingaleDistance = 50;                // Distância mínima entre as ordens após o martingale (em pips)
+extern bool EnableBuyOrders = true;                   // Habilitar ordens de compra
+extern bool EnableSellOrders = true;                  // Habilitar ordens de venda
+
+// Parâmetros das médias móveis internas
+extern int MA1Period = 14;                            // Período da primeira média móvel
+extern int MA2Period = 28;                            // Período da segunda média móvel
+extern int MA1Shift = 0;                              // Shift da primeira média móvel
+extern int MA2Shift = 0;                              // Shift da segunda média móvel
+extern MovingAverageMethod MA1Method = SMA;           // Método da primeira média móvel (SMA, EMA, SMMA)
+extern MovingAverageMethod MA2Method = SMA;           // Método da segunda média móvel (SMA, EMA, SMMA)
+extern color MA1Color = clrBlue;                      // Cor da primeira média móvel
+extern color MA2Color = clrRed;                       // Cor da segunda média móvel
+
+// Parâmetros para Stop Loss e Take Profit
+extern double StopLoss = 50;                          // Stop Loss (em pips)
+extern double TakeProfit = 100;                       // Take Profit (em pips)
+
+// Buffers para as médias móveis internas
+double ma1Buffer[];
+double ma2Buffer[];
+
+// Variáveis para armazenar os valores das médias móveis
+double ma1Current, ma1Previous;
+double ma2Current, ma2Previous;
+double lastPrice = 0; // Adicionada a declaração da variável lastPrice
+
+//+------------------------------------------------------------------+
+//| Função OnInit - Executada quando o EA é inicializado             |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   // Verifica se os indicadores foram carregados com sucesso (se externos forem usados)
+   if (IndicatorSelection == EXTERNAL)
+   {
+      if (iCustom(NULL, 0, Indicator1Name, Indicator1BuyBufferIndex, 0) == INVALID_HANDLE ||
+          iCustom(NULL, 0, Indicator2Name, Indicator2BuyBufferIndex, 0) == INVALID_HANDLE)
+      {
+         Print("Erro ao carregar os indicadores: ", Indicator1Name, " e ", Indicator2Name);
+         return(INIT_FAILED);
+      }
+   }
+
+   // Inicializa os buffers para as médias móveis internas
+   IndicatorBuffers(2);
+
+   // Configura a primeira média móvel
+   SetIndexBuffer(0, ma1Buffer);
+   SetIndexStyle(0, DRAW_LINE);
+   SetIndexLabel(0, "MA1");
+   // Define a cor da linha da MA1
+   SetIndexStyle(0, DRAW_LINE, STYLE_SOLID, 2, MA1Color); // Estilo, largura e cor
+
+   // Configura a segunda média móvel
+   SetIndexBuffer(1, ma2Buffer);
+   SetIndexStyle(1, DRAW_LINE);
+   SetIndexLabel(1, "MA2");
+   // Define a cor da linha da MA2
+   SetIndexStyle(1, DRAW_LINE, STYLE_SOLID, 2, MA2Color); // Estilo, largura e cor
+
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Função OnTick - Executada a cada tick                            |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   // Atualiza os valores dos buffers dos indicadores externos (se selecionados)
+   double indicator1BuyValue = 0;
+   double indicator1SellValue = 0;
+   double indicator2BuyValue = 0;
+   double indicator2SellValue = 0;
+
+   if (IndicatorSelection == EXTERNAL)
+   {
+      indicator1BuyValue = iCustom(NULL, 0, Indicator1Name, Indicator1BuyBufferIndex, 0);
+      indicator1SellValue = iCustom(NULL, 0, Indicator1Name, Indicator1SellBufferIndex, 0);
+      indicator2BuyValue = iCustom(NULL, 0, Indicator2Name, Indicator2BuyBufferIndex, 0);
+      indicator2SellValue = iCustom(NULL, 0, Indicator2Name, Indicator2SellBufferIndex, 0);
+   }
+
+   // Atualiza os valores das médias móveis internas
+   ma1Current = iMA(NULL, 0, MA1Period, MA1Shift, (int)MA1Method, PRICE_CLOSE, 0);
+   ma1Previous = iMA(NULL, 0, MA1Period, MA1Shift, (int)MA1Method, PRICE_CLOSE, 1);
+   ma2Current = iMA(NULL, 0, MA2Period, MA2Shift, (int)MA2Method, PRICE_CLOSE, 0);
+   ma2Previous = iMA(NULL, 0, MA2Period, MA2Shift, (int)MA2Method, PRICE_CLOSE, 1);
+
+   // Se não houver ordens abertas, verifica as condições para abrir uma nova ordem
+   if (OrdersTotal() == 0)
+   {
+      if (UseCrossing)
+      {
+         // Condição de cruzamento dos indicadores externos
+         if (IndicatorSelection == EXTERNAL)
+         {
+            if (EnableBuyOrders && indicator1BuyValue > indicator2BuyValue && BuyAboveIndicators)  // Cruzamento para compra
+            {
+               OpenOrder(OP_BUY);
+            }
+            else if (EnableSellOrders && indicator1SellValue < indicator2SellValue && !BuyAboveIndicators)  // Cruzamento para venda
+            {
+               OpenOrder(OP_SELL);
+            }
+         }
+
+         // Condição de cruzamento das médias móveis internas
+         if (ma1Previous < ma2Previous && ma1Current > ma2Current && EnableBuyOrders)
+         {
+            OpenOrder(OP_BUY);
+         }
+         else if (ma1Previous > ma2Previous && ma1Current < ma2Current && EnableSellOrders)
+         {
+            OpenOrder(OP_SELL);
+         }
+      }
+      else
+      {
+         // Condição de compra ou venda baseada na posição do preço em relação aos indicadores
+         if (IndicatorSelection == EXTERNAL)
+         {
+            if (EnableBuyOrders && Ask > indicator1BuyValue && Ask > indicator2BuyValue && BuyAboveIndicators)
+            {
+               OpenOrder(OP_BUY);
+            }
+            else if (EnableSellOrders && Bid < indicator1SellValue && Bid < indicator2SellValue && !BuyAboveIndicators)
+            {
+               OpenOrder(OP_SELL);
+            }
+         }
+         else
+         {
+            // Lógica para indicadores internos
+            // Exemplo: Adicione a lógica para abrir ordens com base nos indicadores internos, se necessário
+         }
+      }
+   }
+   else
+   {
+      CheckMartingale();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Função para abrir uma ordem de compra ou venda                   |
+//+------------------------------------------------------------------+
+void OpenOrder(int orderType)
+{
+   double lotSize = LotSize;
+   double stopLossPrice, takeProfitPrice;
+
+   if (orderType == OP_BUY)
+   {
+      stopLossPrice = NormalizeDouble(Ask - StopLoss * Point, Digits);
+      takeProfitPrice = NormalizeDouble(Ask + TakeProfit * Point, Digits);
+      OrderSend(Symbol(), OP_BUY, lotSize, Ask, 3, stopLossPrice, takeProfitPrice, "Buy Order", MagicNumber, 0, clrGreen);
+   }
+   else if (orderType == OP_SELL)
+   {
+      stopLossPrice = NormalizeDouble(Bid + StopLoss * Point, Digits);
+      takeProfitPrice = NormalizeDouble(Bid - TakeProfit * Point, Digits);
+      OrderSend(Symbol(), OP_SELL, lotSize, Bid, 3, stopLossPrice, takeProfitPrice, "Sell Order", MagicNumber, 0, clrRed);
+   }
+
+   // Atualiza o último preço aberto para martingale
+   lastPrice = (orderType == OP_BUY) ? Ask : Bid;
+}
+
+//+------------------------------------------------------------------+
+//| Função para verificar se o martingale deve ser ativado           |
+//+------------------------------------------------------------------+
+void CheckMartingale()
+{
+   for (int i = 0; i < OrdersTotal(); i++)
+   {
+      if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+      {
+         if (OrderMagicNumber() == MagicNumber)
+         {
+            double currentPrice = (OrderType() == OP_BUY) ? Bid : Ask;
+            double priceDifference = MathAbs(currentPrice - lastPrice);
+
+            // Verifica se a ordem está indo contra e se a distância mínima foi atingida
+            if ((OrderType() == OP_BUY && currentPrice < OrderOpenPrice()) ||
+                (OrderType() == OP_SELL && currentPrice > OrderOpenPrice()))
+            {
+               if (priceDifference >= MartingaleDistance * Point)
+               {
+                  if (AccountEquity() - AccountBalance() >= MaxDrawdown)
+                  {
+                     Print("Drawdown máximo atingido. Martingale não será ativado.");
+                     return;
+                  }
+
+                  // Abre a nova ordem com martingale
+                  OpenOrder(OrderType());
+               }
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
